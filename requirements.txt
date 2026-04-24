@@ -8,6 +8,6 @@ openai
 """
 
 with open("requirements.txt", "w") as f:
-    f.write(requirements_content)
+    f.write(requirements_content.strip())
 
 print("Created requirements.txt")
