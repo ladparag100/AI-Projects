@@ -1,9 +1,8 @@
-%%writefile app.py
-
+app_py_content = """
 import streamlit as st
 import pandas as pd
 import os
-from getpass import getpass
+# from getpass import getpass # Removed as st.text_input is used for API key
 from langchain_openai import ChatOpenAI
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 
@@ -71,7 +70,7 @@ You are a smart data assistant capable of reading multiple CSV files.
                 st.info("AI is thinking...")
 
                 try:
-                    with st.spinner('Thinking...'):
+                    with st.spinner('Thinking:'):
                         response = agent.invoke({"input": final_query})
                     st.write(f"**AI:** {response['output']}")
                 except Exception as e:
@@ -83,3 +82,7 @@ You are a smart data assistant capable of reading multiple CSV files.
         st.warning("Please enter your OpenAI API key to proceed.")
 else:
     st.info("Please upload CSV files to start.")
+"""
+
+with open("app.py", "w") as f:
+    f.write(app_py_content)
