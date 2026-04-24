@@ -67,7 +67,7 @@ You are a smart data assistant capable of reading multiple CSV files.
             user_input = st.text_input("You:")
 
             if user_input:
-                final_query = system_prompt + "\n\nQuestion: " + user_input
+                final_query = system_prompt + "\\n\\nQuestion: " + user_input
                 st.info("AI is thinking...")
 
                 try:
