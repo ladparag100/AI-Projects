@@ -39,13 +39,14 @@ if dataframes:
     api_key = st.text_input("Enter your OpenAI API Key:", type="password")
 
     if api_key:
-        system_prompt = """
+        system_prompt_template = '''
 You are a smart data assistant capable of reading multiple CSV files.
 - You have access to the following datasets: {loaded_files}.
 - When asked a question, determine which DataFrame is most relevant.
 - Do NOT answer from general knowledge.
 - Answer in plain English.
-""".format(loaded_files=", ".join(loaded_names))
+'''
+        system_prompt = system_prompt_template.format(loaded_files=", ".join(loaded_names))
 
         try:
             llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0, openai_api_key=api_key)
