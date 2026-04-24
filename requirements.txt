@@ -1,0 +1,13 @@
+requirements_content = """
+langchain-experimental
+langchain-openai
+pandas
+requests==2.32.4
+streamlit
+openai
+"""
+
+with open("requirements.txt", "w") as f:
+    f.write(requirements_content)
+
+print("Created requirements.txt")
