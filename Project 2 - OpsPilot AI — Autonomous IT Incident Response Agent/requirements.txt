@@ -1,0 +1,7 @@
+# Project 2 - OpsPilot AI requirements
+
+streamlit>=1.28.0
+openai>=2.26.0
+langchain==0.3.28
+pandas>=2.0.0
+python-dotenv>=1.0.0
