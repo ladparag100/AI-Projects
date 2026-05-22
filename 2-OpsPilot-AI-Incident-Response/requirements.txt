@@ -1,0 +1,15 @@
+# OpsPilot AI Incident Response Dependencies
+
+# OpenAI Integration
+openai>=2.26.0
+
+# Core Libraries
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Utilities
+requests>=2.31.0
+
+# Jupyter
+jupyter>=1.0.0
+ipython>=8.0.0
