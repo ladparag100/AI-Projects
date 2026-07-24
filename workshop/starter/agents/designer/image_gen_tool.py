@@ -48,48 +48,51 @@ async def generate_image(
     prompt_with_aspect = f"{image_prompt}\n\nGenerate this as a {aspect_hint} image."
 
     try:
-        # TODO 1: Create a genai.Client with vertexai=True, project, and location.
-        # Call client.models.generate_content() with:
-        #   - model=image_model
-        #   - contents=prompt_with_aspect
-        #   - config=types.GenerateContentConfig(
-        #       response_modalities=["IMAGE", "TEXT"],
-        #       http_options=types.HttpOptions(
-        #           retry_options=types.HttpRetryOptions(
-        #               attempts=5, exp_base=2, initial_delay=30,
-        #               http_status_codes=[429, 500, 503, 504],
-        #           ),
-        #           timeout=180_000,
-        #       ),
-        #     )
-        # Store the result in `response`.
-        # Note: retry_options here is essential — image generation quota (DSQ) recovers
-        # slowly, so initial_delay=30s gives the pool time to refill between attempts.
+        client = genai.Client(vertexai=True, project=project_id, location=location)
 
-        # TODO 2: Extract image bytes from the response.
-        # Iterate over response.candidates[0].content.parts.
-        # Find the first part where part.inline_data is not None.
-        # Set image_bytes = part.inline_data.data and mime_type = part.inline_data.mime_type or "image/png".
-        # If no image_bytes found, return {"status": "error", "error": "Gemini returned no image data"}.
-        image_bytes = None
-        mime_type = "image/png"
+        response = client.models.generate_content(
+            model=image_model,
+            contents=prompt_with_aspect,
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"],
+                http_options=types.HttpOptions(
+                    retry_options=types.HttpRetryOptions(
+                        attempts=5, exp_base=2, initial_delay=30,
+                        http_status_codes=[429, 500, 503, 504],
+                    ),
+                    timeout=180_000,
+                ),
+            ),
+        )
 
-        # TODO 3: Upload image_bytes to GCS and return the URI.
-        # - Determine the file extension from mime_type ("jpg" if "jpeg" in mime_type else "png").
-        # - Create a storage.Client and get the bucket (bucket_name).
-        # - Build blob_name: f"campaign-images/{concept_name}-{uuid.uuid4().hex[:8]}.{ext}"
-        # - Upload via blob.upload_from_file(io.BytesIO(image_bytes), content_type=mime_type).
-        # - Build gcs_uri = f"gs://{bucket_name}/{blob_name}".
-        gcs_uri = None
+        # Filter parts to remove empty text parts that cause serialization issues.
+        filtered_parts = [
+            p for p in response.candidates[0].content.parts
+            if p.inline_data or (p.text and p.text.strip())
+        ]
 
-        # Save as ADK artifact so adk web renders the image inline when testing
-        # the Designer directly. Silently skipped when no artifact service is
-        # configured (e.g. Cloud Run deployment).
+        image_part = next((p for p in filtered_parts if p.inline_data), None)
+
+        if not image_part:
+            return {"status": "error", "error": "Gemini returned no image data"}
+
+        image_bytes = image_part.inline_data.data
+        mime_type = image_part.inline_data.mime_type or "image/png"
+
+        ext = "jpg" if "jpeg" in mime_type else "png"
+        from google.cloud import storage
+        gcs_client = storage.Client(project=project_id)
+        bucket = gcs_client.bucket(bucket_name)
+        blob_name = f"campaign-images/{concept_name}-{uuid.uuid4().hex[:8]}.{ext}"
+        blob = bucket.blob(blob_name)
+        blob.upload_from_file(io.BytesIO(image_bytes), content_type=mime_type)
+        gcs_uri = f"gs://{bucket_name}/{blob_name}"
+
+        
         if image_bytes and gcs_uri:
             ext = "jpg" if "jpeg" in mime_type else "png"
             try:
-                artifact = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-                await tool_context.save_artifact(f"{concept_name}.{ext}", artifact)
+                await tool_context.save_artifact(f"{concept_name}.{ext}", image_part)
             except ValueError:
                 pass
 

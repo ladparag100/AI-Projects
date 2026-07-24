@@ -22,6 +22,7 @@ Supports parallel deployment for faster execution
 import asyncio
 import os
 import sys
+import shutil
 from pathlib import Path
 
 # Import env_utils from same directory
@@ -180,6 +181,31 @@ async def grant_pm_secret_access(project_id: str, secret_refs: dict[str, str]) -
             print(f"   Warning: Could not grant access to {secret_id}: {stderr.strip()}")
 
 
+async def ensure_build_permissions(project_id: str) -> None:
+    """
+    Ensure the default compute service account has storage access
+    to read build sources. This is often needed when running
+    gcloud run deploy --source in projects with restricted defaults.
+    """
+    _, project_number, _ = await run_command_async([
+        "gcloud", "projects", "describe", project_id,
+        "--format=value(projectNumber)",
+    ])
+    sa_email = f"{project_number.strip()}-compute@developer.gserviceaccount.com"
+    print(f"   Ensuring build permissions for {sa_email}...")
+
+    returncode, _, stderr = await run_command_async([
+        "gcloud", "projects", "add-iam-policy-binding", project_id,
+        f"--member=serviceAccount:{sa_email}",
+        "--role=roles/storage.objectViewer",
+        "--quiet",
+    ])
+    if returncode == 0:
+        print(f"   ✓ Storage permissions verified for build service account")
+    else:
+        print(f"   Warning: Could not grant build permissions: {stderr.strip()}")
+
+
 async def deploy_single_agent(
     agent_config: dict, project_id: str, region: str
 ) -> str | None:
@@ -199,8 +225,21 @@ async def deploy_single_agent(
 
     print(f"🚀 Deploying {name}...")
 
-    # Build Cloud Run deployment command
-    agent_path = Path(__file__).parent.parent / "agents" / agent_dir
+    # Source paths
+    root_path = Path(__file__).parent.parent
+    agent_path = root_path / "agents" / agent_dir
+    shared_toml = root_path / "pyproject.toml"
+    shared_lock = root_path / "uv.lock"
+
+    # Ensure pyproject.toml is in the agent directory for the build
+    # This is required if the Dockerfile uses 'uv' or 'pip' with the root config
+    agent_toml = agent_path / "pyproject.toml"
+    if shared_toml.exists() and not agent_toml.exists():
+        shutil.copy2(shared_toml, agent_toml)
+    
+    agent_lock = agent_path / "uv.lock"
+    if shared_lock.exists() and not agent_lock.exists():
+        shutil.copy2(shared_lock, agent_lock)
 
     # Build environment variables
     # GOOGLE_CLOUD_LOCATION controls model routing - may be "global" for preview
@@ -258,6 +297,7 @@ async def deploy_single_agent(
         "--max-instances=10",
         "--min-instances=0",
         "--quiet",
+        "--verbosity=info",
     ]
     if secret_refs:
         secrets_flag = ",".join(f"{k}={v}" for k, v in secret_refs.items())
@@ -271,8 +311,11 @@ async def deploy_single_agent(
         return None
 
     if returncode != 0:
-        print(f"❌ Failed to deploy {name}")
-        print(f"   Error: {stderr}")
+        print(f"❌ Failed to deploy {name} (exit code {returncode})")
+        print(f"   Logs/Error:\n{stdout}\n{stderr}")
+        if "cloud-build/builds" in stdout or "cloud-build/builds" in stderr:
+             print("\n💡 Check the detailed build logs in the Google Cloud Console for the specific error:")
+             print("   https://console.cloud.google.com/cloud-build/builds?project=" + project_id)
         return None
 
     print(f"✓ {name} deployed successfully")
@@ -424,6 +467,16 @@ async def deploy_all_agents(project_id: str, region: str) -> dict[str, str]:
     print("Deploying all specialist agents to Cloud Run (sequential)")
     print("=" * 70 + "\n")
 
+    # Ensure required APIs are enabled
+    print("⏳ Enabling required APIs (Cloud Build, Artifact Registry)...")
+    await run_command_async([
+        "gcloud", "services", "enable",
+        "cloudbuild.googleapis.com",
+        "artifactregistry.googleapis.com",
+        "run.googleapis.com",
+        f"--project={project_id}"
+    ])
+
     # Pre-create the Artifact Registry repository
     print("⏳ Pre-creating Artifact Registry repository...")
     _, _, ar_err = await run_command_async([
@@ -437,6 +490,9 @@ async def deploy_all_agents(project_id: str, region: str) -> dict[str, str]:
         print(f"   Warning: {ar_err.strip()}")
     else:
         print("   ✓ Artifact Registry repository ready\n")
+
+    print("⏳ Verifying service account permissions...")
+    await ensure_build_permissions(project_id)
 
     agent_urls = {}
     failed = []

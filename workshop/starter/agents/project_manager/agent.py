@@ -2,32 +2,60 @@ import datetime
 import json
 import logging
 import os
+from typing import Any
 
+from google.genai import Client, types
 from google.adk.agents import Agent
-from google.adk.tools.base_tool import BaseTool
-from google.adk.tools.tool_context import ToolContext
+from google.adk.events import Event
 from dotenv import load_dotenv
+
 try:
     from .retry import GENERATE_CONTENT_CONFIG
+    from .notion_service import NotionService
+    from .orchestrator import ProjectOrchestrator
 except ImportError:
     from retry import GENERATE_CONTENT_CONFIG
+    from notion_service import NotionService
+    from orchestrator import ProjectOrchestrator
 
 load_dotenv()
-
 logger = logging.getLogger("ai_creative_studio.project_manager")
+logger.setLevel(logging.INFO)
 
+def preprocess_notion_tool(tool_name: str, args: dict, tool_context: Any, tool: Any = None) -> tuple[str, dict]:
+    """Robustly correct Notion tool name hallucinations."""
+    original_name = tool_name
+    
+    # Extract base name and replace underscores
+    name_part = tool_name[4:] if tool_name.startswith("API-") else tool_name
+    name_part = name_part.replace("_", "-")
+    
+    if name_part in ("search", "post-search"):
+        tool_name = "API-post-search"
+    elif name_part in ("create-page", "post-page"):
+        tool_name = "API-post-page"
+    elif name_part in ("retrieve-database", "retrieve-a-database"):
+        tool_name = "API-retrieve-a-database"
+    else:
+        tool_name = f"API-{name_part}"
 
-def handle_notion_error(
-    tool: BaseTool,
-    args: dict,
-    tool_context: ToolContext,
-    tool_response: dict,
-) -> dict | None:
-    """Intercept Notion API errors and replace the raw stack trace with a clean message."""
-    if not tool.name.startswith("API-"):
+    if tool_name != original_name:
+        logger.info(f"Fixed tool hallucination: {original_name} -> {tool_name}")
+    return tool_name, args
+
+def handle_notion_error(tool: Any, args: dict, tool_context: Any, tool_response: Any) -> dict | None:
+    """Intercept Notion API errors and inject recovery hints."""
+    tool_name = getattr(tool, "name", "")
+    if not tool_name.startswith("API-"):
         return None
 
-    content = (tool_response.get("content") or [{}])[0].get("text", "")
+    # tool_response is a ToolResponse in ADK 2.2.0
+    if hasattr(tool_response, "to_dict"):
+        resp_dict = tool_response.to_dict()
+    else:
+        resp_dict = tool_response if isinstance(tool_response, dict) else {}
+    
+    content = (resp_dict.get("content") or [{}])[0].get("text", "")
     try:
         data = json.loads(content)
     except Exception:
@@ -39,129 +67,137 @@ def handle_notion_error(
 
     message = data.get("message", "")
     code = data.get("code", "")
-    logger.warning("Notion %s (%s) on %s — injecting recovery hint", status, code, tool.name)
+    logger.warning("Notion %s (%s) — injecting recovery hint", status, code)
 
     if status == 404 and code == "object_not_found":
-        # The misleading Notion message blames sharing/permissions, but the real
-        # cause is passing a database ID as page_id in the parent object.
-        message = (
-            "object_not_found: you passed a database ID as page_id. "
-            'Use {"parent": {"database_id": "<id>"}} not {"parent": {"page_id": "<id>"}}.'
-        )
+        message = "object_not_found: you passed a database ID as page_id. Use parent database_id instead."
 
     return {
         "content": [{
             "type": "text",
-            "text": f"Notion {status} ({code}) on {tool.name}: {message}\n\nRetry with corrected parameters.",
+            "text": f"Notion {status} ({code}): {message}\n\nCheck parameters and retry with corrected values.",
         }]
     }
 
+class OrchestratedAgent(Agent):
+    """A specialized ADK Agent that overrides the run loop for Python orchestration."""
+    def __init__(self, orchestrator: ProjectOrchestrator, **kwargs):
+        super().__init__(**kwargs)
+        object.__setattr__(self, "orchestrator", orchestrator)
+        # Link orchestrator back to agent for tool execution context
+        orchestrator.agent = self
+
+    async def run_async(self, input: str, tool_context: Any = None):
+        """Override standard run loop to use Python orchestration."""
+        # Capture context for use in callbacks
+        object.__setattr__(self, "_current_tool_context", tool_context)
+        # Yield an Event to satisfy the ADK expectation of an AsyncGenerator yielding events
+        result = await self.orchestrator.run(input, tool_context=tool_context)
+        yield Event(
+            author=self.name,
+            content=types.Content(
+                parts=[types.Part(text=result)]
+            )
+        )
+
+    async def execute_tool(self, tool_name: str, args: dict) -> dict:
+        """Execute a tool while respecting the before/after callbacks."""
+        if not self.tools:
+            return {"content": [{"type": "text", "text": "Error: No tools configured."}]}
+
+        context = getattr(self, "_current_tool_context", None)
+        toolset = self.tools[0]
+        
+        # 1. Apply name correction via before_tool_callback
+        if self.before_tool_callback:
+            tool_name, args = self.before_tool_callback(tool_name, args, context, tool=toolset)
+
+        # 2. Execute the tool by resolving the Tool object (ADK 2.2.0 API)
+        all_tools = await toolset.get_tools()
+        target_tool = next((t for t in all_tools if t.name == tool_name), None)
+        
+        if not target_tool:
+            return {"content": [{"type": "text", "text": f"Error: Tool {tool_name} not found."}]}
+
+        response = await target_tool.run_async(args=args, tool_context=context)
+
+        # 3. Handle errors/intercepts via after_tool_callback
+        if self.after_tool_callback:
+            hook_result = self.after_tool_callback(target_tool, args, context, response)
+            if hook_result:
+                return hook_result
+
+        return response
 
 def get_system_instruction(project_database_id=None, tasks_database_id=None):
-    # notion_section is empty when Notion is not configured, so the agent
-    # receives no tool instructions for capabilities it doesn't have.
-    notion_section = (
-        f"""
-Projects database ID: {project_database_id}
-Tasks database ID: {tasks_database_id}
+    notion_guidance = ""
+    if project_database_id:
+        notion_guidance = f"\nProject DB: {project_database_id}\nTasks DB: {tasks_database_id}\nSync the plan to these Notion databases."
 
-Also persist the project and tasks to these Notion databases using the available Notion tools.
-Notion tools follow the pattern `API-<operation>` — use their exact names as listed in the tool
-manifest. Use them directly — never wrap in `print()` or prefix with `default_api.`
+    return f"""You are a Project Manager specializing in creative campaign execution.
+    
+Today's date is {datetime.date.today().strftime("%B %d, %Y")}.
+Your goal is to transform a campaign brief into a structured project plan.{notion_guidance}
 
-Before creating anything, use the available tools to discover the schema of each database.
-Only use property names and types that actually exist in the schema you discover.
-
-Property rules:
-- Always set the database parent using `database_id` — never `page_id`
-- Never set "people" or "person" type properties — integration tokens cannot assign users; skip them
-- For "relation" type properties linking tasks to the project: set ONLY {{"relation": [{{"id": "<project-page-id>"}}]}}.
-  Never set sub-fields like name, state, start, lat on the relation - those are read-only rollups.
-  If a task creation fails with a validation_error on a relation property, immediately retry
-  creating that task WITHOUT the relation property entirely.
-- Only set properties whose type you can identify from the schema response; if a property type
-  is unclear after reading the schema, skip it and note it in the Notion Status
-
-If any Notion call fails, continue — the text timeline is always the primary deliverable.
-Write your complete response AFTER all Notion operations are done (or have failed).
-
-If image HTTPS links are provided in the input (under "Generated Images" from the Creative
-Director), add them to the Notion project page body as a bulleted list under a
-"Generated Images" heading after creating the project page.
-"""
-        if project_database_id
-        else ""
-    )
-
-    # TODO 1: Write the system instruction for the Project Manager.
-    # It should:
-    #   - Use today's date as the starting point for all timelines
-    #   - Break campaigns into phases: Strategy, Creation, Review, Launch
-    #   - Create tasks with owners and deadlines
-    #   - ALWAYS provide a text timeline first (primary deliverable)
-    #   - Use {notion_section} to optionally include Notion guidance
-    #
-    # Required text output format:
-    #   **Project Timeline:** [phases with dates from today]
-    #   **Task List:** [Task | Owner | Deadline | Status]
-    #   **Budget Breakdown:** [by category]
-    #   **Milestones:** [key checkpoints]
-    #   **Notion Status:** ["Project created..." or "Notion not configured - text timeline only"]
-    #
-    # Today's date: {datetime.date.today().strftime("%B %d, %Y")}
-    return f"""
-# TODO 1: Write the Project Manager system instruction here
-
-Today's date: {datetime.date.today().strftime("%B %d, %Y")}
-{notion_section}
-"""
-
+Use available tools to search for databases, retrieve schemas, and create pages.
+Ensure all timelines are realistic."""
 
 def create_project_manager_agent():
     """Create the Project Manager agent, with Notion MCP if credentials are set."""
-    notion_token           = os.getenv("NOTION_TOKEN")
-    notion_project_db_id   = os.getenv("NOTION_PROJECT_DATABASE_ID")
-    notion_tasks_db_id     = os.getenv("NOTION_TASKS_DATABASE_ID")
+    notion_token = os.getenv("NOTION_TOKEN")
+    notion_project_db_id = os.getenv("NOTION_PROJECT_DATABASE_ID")
+    notion_tasks_db_id = os.getenv("NOTION_TASKS_DATABASE_ID")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-    if not notion_token or not notion_project_db_id or not notion_tasks_db_id:
+    # Client for the orchestrator to use for structured generation
+    client = Client(api_key=os.getenv("GOOGLE_API_KEY"))
+
+    if not notion_token:
         logger.warning("Notion credentials not set — running without Notion integration")
-
-        # TODO 2: Create and return an Agent without tools
-        # Use name="project_manager", model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         return Agent(
             name="project_manager",
-            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            model=model_name,
+            instruction=get_system_instruction(),
             generate_content_config=GENERATE_CONTENT_CONFIG,
-            # TODO 2: add instruction=get_system_instruction()
-            # TODO 2: add description=
+            description="Project manager that creates campaign timelines and task breakdowns",
         )
 
     else:
-        logger.info(f"Notion configured — projects database: {notion_project_db_id}, tasks database: {notion_tasks_db_id}")
+        from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
+        from mcp import StdioServerParameters
 
-        # TODO 3: Create the MCP toolset for Notion
-        # Hint: import McpToolset, StdioConnectionParams from google.adk.tools.mcp_tool
-        #       import StdioServerParameters from mcp
-        #
-        # server_params = StdioServerParameters(
-        #     command="notion-mcp-server",
-        #     env={"NOTION_TOKEN": notion_token, "PATH": os.environ.get("PATH", "")}
-        # )
-        # notion_toolset = McpToolset(
-        #     connection_params=StdioConnectionParams(server_params=server_params, timeout=30.0)
-        # )
-
-        # TODO 3: Create and return an Agent WITH the notion_toolset
-        return Agent(
-            name="project_manager",
-            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            generate_content_config=GENERATE_CONTENT_CONFIG,
-            after_tool_callback=handle_notion_error,
-            # TODO 3: add instruction=get_system_instruction(project_database_id=notion_project_db_id, tasks_database_id=notion_tasks_db_id)
-            # TODO 3: add description=
-            # TODO 3: add tools=[notion_toolset]
+        server_params = StdioServerParameters(
+            command="npx",
+            args=["-y", "@notionhq/notion-mcp-server"],
+            env={
+                "NOTION_TOKEN": notion_token,
+                "PATH": os.environ.get("PATH", ""),
+            }
+        )
+        notion_toolset = McpToolset(
+            connection_params=StdioConnectionParams(
+                server_params=server_params,
+                timeout=30.0
+            )
         )
 
+        service = NotionService(notion_toolset, None)
+        orchestrator = ProjectOrchestrator(client, service, model_name)
+
+        return OrchestratedAgent(
+            orchestrator=orchestrator,
+            name="project_manager",
+            model=model_name,
+            generate_content_config=GENERATE_CONTENT_CONFIG,
+            before_tool_callback=preprocess_notion_tool,
+            after_tool_callback=handle_notion_error,
+            instruction=get_system_instruction(
+                project_database_id=notion_project_db_id,
+                tasks_database_id=notion_tasks_db_id,
+            ),
+            description="Project manager with Notion integration for task tracking",
+            tools=[notion_toolset],
+        )
 
 root_agent = create_project_manager_agent()
 logger.info("Project Manager agent created")

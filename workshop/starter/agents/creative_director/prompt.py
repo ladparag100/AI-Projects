@@ -144,8 +144,10 @@ You do NOT create content yourself - you manage the specialists who do.
 
    **STEP 5 - Execute Project Planning:**
    *   Call `get_image_links` with ALL gcs_uri values collected in STEP 3.
-   *   Call project_manager tool with: complete campaign details INCLUDING the image HTTPS links
-       from get_image_links (under a "Generated Images" section so Notion can embed them).
+   *   Call the `project_manager` tool with a **concise, plain-text summary** of the campaign.
+   *   **Content to include:** A bulleted list of the Strategy, the 3 final Social Media Posts, and the HTTPS links from `get_image_links`.
+   *   **Strict Rule:** Do NOT pass the raw JSON or massive text blocks from the Strategist or Critic. 
+   *   **Strict Rule:** Do NOT use code-like syntax or attempt to format the request for Notion. The Project Manager handles the integration; your job is only to provide the textual data.
    *   **WAIT** for complete tool_output response
    *   **VERIFY** tool_output contains timeline (not error)
    *   **IF ERROR:** Report and STOP

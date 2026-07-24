@@ -36,14 +36,19 @@ def get_image_links(gcs_uris: list[str]) -> dict:
         # On Agent Runtime, service_account_email is "default" - resolve the real email
         # from the GCP metadata server.
         if sa_email == "default":
-            import urllib.request
-            req = urllib.request.Request(
-                "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
-                headers={"Metadata-Flavor": "Google"},
-            )
-            sa_email = urllib.request.urlopen(req, timeout=2).read().decode()
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
+                    headers={"Metadata-Flavor": "Google"},
+                )
+                with urllib.request.urlopen(req, timeout=2) as response:
+                    sa_email = response.read().decode().strip()
+            except Exception:
+                # If resolution fails, fallback to None to avoid incorrect signing attempts
+                sa_email = None
 
-        if sa_email:
+        if sa_email and sa_email != "default":
             # Use IAM Sign Blob API - works for all credential types (Compute Engine,
             # Cloud Run, user ADC with impersonation). No private key needed.
             from google.auth import iam as google_auth_iam
