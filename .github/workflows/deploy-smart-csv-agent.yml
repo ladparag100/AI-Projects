@@ -1,0 +1,33 @@
+name: Deploy Smart CSV Agent to Snowflake
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "1-Smart-CSV-Agent/**"
+      - ".github/workflows/deploy-smart-csv-agent.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 1-Smart-CSV-Agent
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - run: pip install snowflake-cli
+      - run: |
+          mkdir -p ~/.snowflake
+          cat <<EOF > ~/.snowflake/config.toml
+          [connections.default]
+          account = "uy40642"
+          user = "LADPARAG"
+          password = "${{ secrets.SNOWFLAKE_PASSWORD }}"
+          role = "ACCOUNTADMIN"
+          warehouse = "COMPUTE_WH"
+          EOF
+          chmod 0600 ~/.snowflake/config.toml
+      - run: snow streamlit deploy --replace
