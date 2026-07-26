@@ -34,4 +34,5 @@ jobs:
             --project project-8a378124-dc5f-47f4-91a \
             --port 7860 \
             --allow-unauthenticated \
+            --set-env-vars GOOGLE_CLOUD_PROJECT=project-8a378124-dc5f-47f4-91a,GOOGLE_CLOUD_LOCATION=us-central1 \
             --quiet

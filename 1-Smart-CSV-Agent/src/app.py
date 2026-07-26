@@ -3,7 +3,26 @@ import os
 import pandas as pd
 import streamlit as st
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+GCP_PROJECT = os.environ["GOOGLE_CLOUD_PROJECT"]
+GCP_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+
+def extract_text(content):
+    """Gemini can return message content as a list of parts (e.g. text
+    plus a thought-signature block) instead of a plain string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "".join(parts)
+    return str(content)
 
 st.set_page_config(page_title="Smart CSV Agent", page_icon="📊", layout="wide")
 
@@ -12,13 +31,7 @@ st.write("Upload one or more CSV files and ask questions about their content in 
 
 with st.sidebar:
     st.header("Configuration")
-    api_key = st.text_input(
-        "OpenAI API Key",
-        value=os.getenv("OPENAI_API_KEY", ""),
-        type="password",
-        help="Set the OPENAI_API_KEY environment variable to skip this prompt.",
-    )
-    model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o"], index=0)
+    model_name = st.selectbox("Model", ["gemini-2.5-flash", "gemini-2.5-pro"], index=0)
     st.divider()
     if st.button("Clear chat"):
         st.session_state.messages = []
@@ -48,8 +61,6 @@ if "messages" not in st.session_state:
 
 if not uploaded_files:
     st.info("Upload at least one CSV file to get started.")
-elif not api_key:
-    st.warning("Enter your OpenAI API key in the sidebar to activate the agent.")
 elif dataframes:
     system_prompt = """
 You are a smart data assistant capable of reading multiple CSV files.
@@ -60,12 +71,18 @@ You are a smart data assistant capable of reading multiple CSV files.
 """.format(loaded_files=", ".join(loaded_names))
 
     try:
-        llm = ChatOpenAI(model=model_name, temperature=0.0, openai_api_key=api_key)
+        llm = ChatGoogleGenerativeAI(
+            model=model_name,
+            vertexai=True,
+            project=GCP_PROJECT,
+            location=GCP_LOCATION,
+            temperature=0.0,
+        )
         agent = create_pandas_dataframe_agent(
             llm,
             dataframes,
             verbose=True,
-            agent_type="openai-functions",
+            agent_type="tool-calling",
             allow_dangerous_code=True,
         )
     except Exception as e:
@@ -87,7 +104,7 @@ You are a smart data assistant capable of reading multiple CSV files.
                     try:
                         final_query = system_prompt + "\n\nQuestion: " + user_input
                         response = agent.invoke({"input": final_query})
-                        answer = response["output"]
+                        answer = extract_text(response["output"])
                     except Exception as e:
                         answer = f"An error occurred: {e}"
                     st.markdown(answer)
