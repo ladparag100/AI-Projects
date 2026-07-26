@@ -28,6 +28,9 @@ jobs:
           password = "${{ secrets.SNOWFLAKE_PASSWORD }}"
           role = "ACCOUNTADMIN"
           warehouse = "COMPUTE_WH"
+          database = "AI_PROJECTS"
+          schema = "PUBLIC"
           EOF
           chmod 0600 ~/.snowflake/config.toml
+      - run: snow sql -q "CREATE DATABASE IF NOT EXISTS AI_PROJECTS; CREATE SCHEMA IF NOT EXISTS AI_PROJECTS.PUBLIC;"
       - run: snow streamlit deploy --replace
