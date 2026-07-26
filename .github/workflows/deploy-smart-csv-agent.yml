@@ -1,11 +1,10 @@
 name: Deploy Smart CSV Agent to Snowflake
 
+# Manual trigger only - parked in favor of Hugging Face Spaces because the
+# Snowflake trial account's compute pool couldn't satisfy the app's
+# dependencies. Kept here in case that changes.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "1-Smart-CSV-Agent/**"
-      - ".github/workflows/deploy-smart-csv-agent.yml"
+  workflow_dispatch: {}
 
 jobs:
   deploy:
