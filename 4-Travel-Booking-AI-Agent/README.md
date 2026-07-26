@@ -1,51 +1,44 @@
 # Travel Booking AI Agent ✈️
 
-A multi-agent travel planning system that searches flights, books hotels, plans itineraries, and provides personalized travel recommendations.
+A multi-agent travel planning system by Parag Lad that answers travel questions and plans day-by-day itineraries using LangGraph and deep research.
 
 ## 📋 Project Overview
 
-This project demonstrates how to:
-- Search hotels and flights based on user preferences
-- Plan complete travel itineraries
-- Answer travel-related questions with deep research
-- Handle multiple queries in parallel
-- Present unified, well-formatted travel recommendations
+This project:
+- Answers general travel questions (weather, visas, packing, destination comparisons)
+- Plans complete day-by-day travel itineraries
+- Routes each query to the right agent: quick lookup vs. deep research
+- Cites sources for its research
+- Ships a Streamlit chat interface
 
 ## 🎯 Features
 
-✅ **Flight Search** - Find flights across multiple dates
-✅ **Hotel Search** - Compare hotel options by price and ratings
-✅ **Itinerary Planning** - Create day-by-day travel plans
-✅ **Multi-Agent Coordination** - Multiple agents working together
-✅ **Research Integration** - Use Tavily for real-time data
-✅ **Deep Reasoning** - LangGraph for complex workflows
+✅ **Travel Scout Agent** - Routes queries and answers general travel questions
+✅ **Itinerary Research Agent** - Deep, multi-step research for full itineraries
+✅ **Real-Time Web Search** - Tavily-powered research with source citations
+✅ **Multi-Agent Coordination** - LangGraph ReAct agent + deep research sub-agent
+✅ **Web Interface** - Streamlit chat UI
 
 ## 📁 Project Structure
 
 ```
 4-Travel-Booking-AI-Agent/
 ├── README.md                           # This file
-├── requirements.txt                    # Python dependencies
+├── requirements.txt                    # Python dependencies (notebook/dev)
 ├── notebooks/
 │   └── Multi_Agent_Travel_Planner.ipynb
 └── src/
-    ├── agents/
-    │   ├── search_agent.py             # Flight/hotel search
-    │   ├── itinerary_agent.py          # Planning agent
-    │   └── scout_agent.py              # Coordination agent
-    └── tools/
-        ├── flight_search.py
-        ├── hotel_search.py
-        └── web_search.py
+    ├── app.py                          # Streamlit application
+    ├── requirements.txt                # Streamlit Cloud app dependencies
+    └── runtime.txt                     # Pinned Python version for deployment
 ```
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11+ (required by the `deepagents` dependency)
 - OpenAI API Key
-- Tavily API Key (for web search)
-- SerpAPI Key (for flight/hotel search)
+- Tavily API Key (for web search) — get a free key at [tavily.com](https://tavily.com)
 
 ### Installation
 
@@ -54,7 +47,13 @@ This project demonstrates how to:
 cd 4-Travel-Booking-AI-Agent
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -r src/requirements.txt
+```
+
+### Run the Streamlit App
+
+```bash
+streamlit run src/app.py
 ```
 
 ### Run Jupyter Notebook
@@ -68,75 +67,61 @@ jupyter notebook notebooks/Multi_Agent_Travel_Planner.ipynb
 ### General Travel Question
 ```
 User: "What's the best season to visit Japan?"
-Agent: Uses internet_search to provide seasonal guidance
+Agent: Uses internet_search to provide seasonal guidance with sources
 ```
 
 ### Detailed Itinerary
 ```
 User: "Plan a 5-day trip to Tokyo for a first-time visitor"
-Agent: Uses itinerary_research_agent to create detailed daily plans
-```
-
-### Flight Search
-```
-User: "Find flights from NYC to LA in December"
-Agent: Uses search_flights tool to find options
+Agent: Routes to the itinerary research agent for a full day-by-day plan
 ```
 
 ## 🔑 Environment Variables
 
-Create a `.env` file in the root directory:
+Set these before running, or enter them directly in the Streamlit sidebar:
 ```
 OPENAI_API_KEY=your_api_key_here
 TAVILY_API_KEY=your_tavily_key
-SERPAPI_API_KEY=your_serpapi_key
 ```
 
 ## 📚 Key Technologies
 
-- **LangGraph** - Multi-agent orchestration
+- **LangGraph** - Multi-agent orchestration (ReAct agent)
+- **deepagents** - Deep research sub-agent for itinerary planning
 - **OpenAI** - GPT model access
 - **Tavily** - Web search integration
-- **SerpAPI** - Flight/hotel search
 - **LangChain** - LLM framework
 
 ## 🏗️ Agent Architecture
 
 ### Travel Scout Agent
-- Main coordinator
-- Routes queries to appropriate tools
-- Synthesizes results
+- Main coordinator (LangGraph ReAct agent)
+- Answers general travel questions directly via web search
+- Delegates itinerary requests to the research agent
+- Synthesizes results and cites sources
 
 ### Itinerary Research Agent
-- Deep research capabilities
-- Creates detailed plans
-- Uses ReAct pattern
-
-### Search Agent
-- Flight searches
-- Hotel searches
-- Real-time pricing
+- Deep research sub-agent (`deepagents`)
+- Multi-step ReAct research loop over Tavily search results
+- Produces structured, day-by-day itineraries
 
 ## 💡 Tips
 
 ### Optimize Costs
 - Use GPT-4o-mini for cost efficiency
-- Cache results when possible
-- Batch similar requests
+- Ask follow-up questions instead of broad, open-ended ones
 
 ### Improve Accuracy
-- Provide clear constraints
-- Ask follow-up questions
-- Validate sources
+- Provide clear constraints (dates, budget, interests)
+- Validate sources cited in the response
 
 ## 📈 Future Enhancements
 
+- [ ] Flight search integration
+- [ ] Hotel search integration
 - [ ] Booking integration
-- [ ] Payment processing
-- [ ] Loyalty program support
-- [ ] Mobile app
 - [ ] Real-time notifications
 
 ## 📝 License
 
-MIT License
+MIT License — © Parag Lad

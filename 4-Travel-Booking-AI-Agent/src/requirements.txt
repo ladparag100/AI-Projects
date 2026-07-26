@@ -1,0 +1,10 @@
+# Travel Booking AI Agent - Streamlit app dependencies
+# Note: deepagents requires the LangChain 1.x line (langchain-core>=1.4),
+# which is newer than the 0.3.x pins used by the other projects in this repo.
+
+langchain-tavily>=0.1.0
+langgraph
+deepagents>=0.6.0,<0.7.0
+langchain-openai
+
+streamlit>=1.28.0
