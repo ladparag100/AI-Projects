@@ -2,11 +2,8 @@ import os
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 from langchain_openai import ChatOpenAI
-
-load_dotenv()
 
 st.set_page_config(page_title="Smart CSV Agent", page_icon="📊", layout="wide")
 
@@ -19,7 +16,7 @@ with st.sidebar:
         "OpenAI API Key",
         value=os.getenv("OPENAI_API_KEY", ""),
         type="password",
-        help="Set OPENAI_API_KEY in a .env file to skip this prompt.",
+        help="Set the OPENAI_API_KEY environment variable to skip this prompt.",
     )
     model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o"], index=0)
     st.divider()
