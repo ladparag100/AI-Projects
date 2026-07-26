@@ -11,7 +11,7 @@ langchain-core==0.3.84
 pandas>=2.0.0,<3.0.0
 numpy>=1.26.0,<2.0.0
 
-# Web Framework (Optional)
+# Web Framework
 streamlit>=1.28.0
 
 # OpenAI Integration

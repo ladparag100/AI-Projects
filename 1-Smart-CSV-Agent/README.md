@@ -1,23 +1,23 @@
 # Smart CSV Agent 📊
 
-An intelligent AI agent that can read and answer questions across multiple CSV files simultaneously using LangChain and OpenAI.
+An AI agent by Parag Lad that reads and answers questions across multiple CSV files simultaneously using LangChain and OpenAI.
 
 ## 📋 Project Overview
 
-This project demonstrates how to:
-- Load multiple CSV files
-- Create an AI agent that understands context
-- Answer questions across different datasets
-- Build a Streamlit web interface
-- Use LangChain with OpenAI API
+This project:
+- Loads multiple CSV files
+- Creates an AI agent that understands context
+- Answers questions across different datasets
+- Ships a Streamlit web interface
+- Uses LangChain with the OpenAI API
 
 ## 🎯 Features
 
 ✅ **Multi-File Support** - Load multiple CSV files at once
 ✅ **Natural Language Queries** - Ask questions in plain English
 ✅ **Context Awareness** - Agent understands which data to search
-✅ **Web Interface** - Beautiful Streamlit UI
-✅ **Jupyter Notebook** - Step-by-step learning
+✅ **Web Interface** - Streamlit chat UI
+✅ **Jupyter Notebook** - Notebook version with the same flow
 ✅ **Error Handling** - Graceful error messages
 
 ## 📁 Project Structure
@@ -29,7 +29,7 @@ This project demonstrates how to:
 ├── notebooks/
 │   └── Smart_CSV_AI_Agent.ipynb
 └── src/
-    └── agent.py                        # Agent implementation
+    └── app.py                          # Streamlit application
 ```
 
 ## 🚀 Quick Start
@@ -46,6 +46,12 @@ cd 1-Smart-CSV-Agent
 
 # Install dependencies
 pip install -r requirements.txt
+```
+
+### Run the Streamlit App
+
+```bash
+streamlit run src/app.py
 ```
 
 ### Run Jupyter Notebook
@@ -73,7 +79,7 @@ OPENAI_API_KEY=your_api_key_here
 - **LangChain** - LLM framework
 - **OpenAI** - GPT model access
 - **Pandas** - Data manipulation
-- **Streamlit** - Web interface (optional)
+- **Streamlit** - Web interface
 
 ## 📖 Resources
 
@@ -83,4 +89,4 @@ OPENAI_API_KEY=your_api_key_here
 
 ## 📝 License
 
-MIT License
+MIT License — © Parag Lad
