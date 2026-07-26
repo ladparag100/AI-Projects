@@ -1,0 +1,37 @@
+name: Deploy Smart CSV Agent to Cloud Run
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "1-Smart-CSV-Agent/**"
+      - ".github/workflows/deploy-smart-csv-agent-cloudrun.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: project-8a378124-dc5f-47f4-91a
+          workload_identity_provider: projects/561690375744/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-actions-deploy@project-8a378124-dc5f-47f4-91a.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy smart-csv-agent \
+            --source 1-Smart-CSV-Agent \
+            --region us-central1 \
+            --project project-8a378124-dc5f-47f4-91a \
+            --port 7860 \
+            --allow-unauthenticated \
+            --quiet
