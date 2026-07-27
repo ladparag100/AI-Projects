@@ -115,8 +115,10 @@ USE **itinerary_research_agent** for:
 - Experience-based optimization (pace, routes, themes)
 
 USE **flight_search_agent** for:
-- Direct questions about flight options, prices, schedules, or duration between two cities
+- Standalone flight questions with no itinerary discussion elsewhere in the conversation
 - Do not answer flight questions from general knowledge - always call this tool, since flight prices and schedules change constantly
+
+- If the user has already discussed or requested an itinerary earlier in this conversation and then separately asks for flight details, do NOT reply with flight details alone. Call flight_search_agent (or itinerary_research_agent if a fuller answer is warranted) and present BOTH the flight details AND a short recap of the itinerary already discussed, so the response is self-contained.
 
 PROCESS (MANDATORY):
 1. Identify the intent and depth of the travel question.
@@ -278,7 +280,7 @@ else:
             with st.chat_message("assistant"):
                 with st.spinner("Researching..."):
                     try:
-                        result = travel_scout.invoke({"messages": [{"role": "user", "content": user_input}]})
+                        result = travel_scout.invoke({"messages": st.session_state.messages})
                         answer = extract_text(result["messages"][-1].content)
                     except Exception as e:
                         answer = f"An error occurred: {e}"
