@@ -18,6 +18,9 @@ deepagents
 tavily-python>=0.3.0
 langchain-tavily>=0.1.0
 
+# Flight Search (SerpApi Google Flights)
+google-search-results>=2.4.0
+
 # OpenAI Integration
 openai
 tiktoken>=0.7.0

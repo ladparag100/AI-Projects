@@ -1,5 +1,7 @@
 import os
+from datetime import date
 
+import serpapi
 import streamlit as st
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
@@ -46,6 +48,7 @@ You MUST follow this process internally:
 
 TOOL USAGE
 - TavilySearch is the primary tool for researching up-to-date travel information.
+- If the traveler's origin city and travel dates are known (or can be reasonably inferred), use flight_search_agent to look up real flight options and include them in the itinerary. Do not fabricate flight prices, times, or airlines - only report what flight_search_agent returns.
 - Prefer official tourism boards, transportation providers, reputable travel guides, and recent reviews.
 - Do not fabricate details if information is unavailable; explicitly state assumptions or gaps.
 
@@ -55,6 +58,7 @@ All itineraries MUST include:
 - Specific activity timing (morning / afternoon / evening, with approximate hours)
 - Exact locations or neighborhoods
 - Transportation methods between stops (walking, public transit, taxi, flight, etc.)
+- Real flight options (airline, price, duration) when origin and dates are known
 - Estimated costs (ranges are acceptable)
 - Practical tips (tickets, reservations, safety, local customs)
 
@@ -69,6 +73,20 @@ QUALITY BAR
 - If critical details are missing, ask targeted clarification questions before finalizing the itinerary
 """
 
+FLIGHT_SEARCH_INSTRUCTIONS = """You are a flight search specialist. Your only job is to find real flight options using the search_flights tool.
+
+Today's date is {today}.
+
+PROCESS:
+1. Identify the origin and destination. Resolve each city to ONE SPECIFIC AIRPORT's 3-letter IATA code - never a multi-airport metro/city code. For example: New York -> JFK (NOT NYC), London -> LHR (NOT LON), Tokyo -> NRT (NOT TYO), Paris -> CDG (NOT PAR), Chicago -> ORD (NOT CHI). Metro/city codes are not accepted by the flight search tool and will return zero results. If a city is ambiguous or you are not confident of the airport code, ask a clarifying question instead of guessing.
+2. Identify the outbound date, and return date if this is a round trip. Dates must be in YYYY-MM-DD format. If a date is relative (e.g. "next Friday"), resolve it using today's date above. If dates are missing entirely, ask for them.
+3. Call search_flights with departure_id, arrival_id, outbound_date, and return_date (if round trip).
+4. Report ONLY what the tool returns - airline, price, duration, stops. Never invent or estimate flight prices, times, or airlines.
+5. If the tool returns no results or an error, say so plainly rather than guessing.
+
+OUTPUT: A short, clear list of the top flight options (airline, price, duration, stops), plus a one-line summary of the cheapest and fastest option.
+"""
+
 TRAVEL_SCOUT_INSTRUCTIONS = """You are a General Travel Scout specializing in both high-level travel information, guidance and itinerary planning for multi-day trips.
 Your role is to answer both general travel questions and questions that require detailed itinerary planning.
 
@@ -79,8 +97,9 @@ SCOPE AND BEHAVIOR RULES:
   - What to pack or wear (clothing, gear, cultural norms)
   - Safety, visas, currency, local customs, and basic logistics
   - High-level comparisons between destinations
-- To create day-by-day itineraries if asked use **itinerary_research_agent**.
-- Do NOT search or recommend specific flights or hotels.
+- To create day-by-day itineraries if asked use **itinerary_research_agent** (it will pull in real flight options itself when relevant).
+- To answer specific flight search or pricing questions use **flight_search_agent**.
+- Do NOT recommend specific hotels.
 - Politely decline and redirect if the request is unrelated to travel.
 
 TOOL SELECTION RULES (CRITICAL)
@@ -94,6 +113,10 @@ USE **itinerary_research_agent** for:
 - Multi-day or day-by-day travel plans
 - Deep destination research across multiple locations
 - Experience-based optimization (pace, routes, themes)
+
+USE **flight_search_agent** for:
+- Direct questions about flight options, prices, schedules, or duration between two cities
+- Do not answer flight questions from general knowledge - always call this tool, since flight prices and schedules change constantly
 
 PROCESS (MANDATORY):
 1. Identify the intent and depth of the travel question.
@@ -119,6 +142,7 @@ FORMATTING GUIDELINES:
 
 openai_api_key = os.getenv("OPENAI_API_KEY", "")
 tavily_api_key = os.getenv("TAVILY_API_KEY", "")
+serpapi_api_key = os.getenv("SERPAPI_API_KEY", "")
 
 with st.sidebar:
     st.header("Configuration")
@@ -129,10 +153,65 @@ with st.sidebar:
         st.rerun()
 
 
+# SerpApi's Google Flights engine rejects multi-airport metro/city codes
+# (e.g. LON, NYC) and returns zero results - the model is instructed to
+# avoid these, but this is a deterministic safety net for common ones.
+CITY_CODE_TO_AIRPORT = {
+    "LON": "LHR", "NYC": "JFK", "PAR": "CDG", "TYO": "NRT", "CHI": "ORD",
+    "WAS": "IAD", "MOW": "SVO", "BJS": "PEK", "SAO": "GRU", "BUE": "EZE",
+    "MIL": "MXP", "ROM": "FCO", "OSA": "KIX", "SEL": "ICN", "STO": "ARN",
+    "RIO": "GIG",
+}
+
+
+@tool("search_flights", description="Searches real flight options (price, airline, duration, stops) between two airports using Google Flights data via SerpApi.")
+def search_flights(departure_id: str, arrival_id: str, outbound_date: str, return_date: str = "") -> str:
+    """
+    departure_id / arrival_id: IATA airport codes, e.g. JFK, NRT, LHR.
+    outbound_date / return_date: YYYY-MM-DD. Omit return_date for a one-way search.
+    """
+    departure_id = CITY_CODE_TO_AIRPORT.get(departure_id.upper(), departure_id.upper())
+    arrival_id = CITY_CODE_TO_AIRPORT.get(arrival_id.upper(), arrival_id.upper())
+
+    params = {
+        "engine": "google_flights",
+        "departure_id": departure_id,
+        "arrival_id": arrival_id,
+        "outbound_date": outbound_date,
+        "currency": "USD",
+        "type": 1 if return_date else 2,
+        "api_key": os.environ["SERPAPI_API_KEY"],
+    }
+    if return_date:
+        params["return_date"] = return_date
+
+    results = serpapi.GoogleSearch(params).get_dict()
+
+    if "error" in results:
+        return f"Flight search error: {results['error']}"
+
+    flights = results.get("best_flights", []) + results.get("other_flights", [])
+    if not flights:
+        return "No flights found for these criteria."
+
+    lines = []
+    for flight in flights[:5]:
+        legs = flight.get("flights", [])
+        airlines = ", ".join(sorted({leg.get("airline", "Unknown") for leg in legs}))
+        stops = max(len(legs) - 1, 0)
+        duration = flight.get("total_duration", 0)
+        price = flight.get("price", "N/A")
+        lines.append(
+            f"- {airlines}: ${price}, {duration // 60}h {duration % 60}m, {stops} stop(s)"
+        )
+    return "\n".join(lines)
+
+
 @st.cache_resource(show_spinner=False)
-def build_travel_scout(openai_key: str, tavily_key: str, model: str):
+def build_travel_scout(openai_key: str, tavily_key: str, serpapi_key: str, model: str):
     os.environ["OPENAI_API_KEY"] = openai_key
     os.environ["TAVILY_API_KEY"] = tavily_key
+    os.environ["SERPAPI_API_KEY"] = serpapi_key
 
     internet_search = TavilySearch(
         max_results=5,
@@ -142,11 +221,23 @@ def build_travel_scout(openai_key: str, tavily_key: str, model: str):
         search_depth="advanced",
     )
 
+    flight_model = ChatOpenAI(model=model, temperature=0.0, openai_api_key=openai_key)
+    flight_search_agent = create_react_agent(
+        model=flight_model,
+        tools=[search_flights],
+        prompt=FLIGHT_SEARCH_INSTRUCTIONS.format(today=date.today().isoformat()),
+    )
+
+    @tool("flight_search_agent", description="Finds real flight options and prices between two cities on specific dates.")
+    def call_flight_search_agent(query: str):
+        result = flight_search_agent.invoke({"messages": [{"role": "user", "content": query}]})
+        return extract_text(result["messages"][-1].content)
+
     research_model = init_chat_model(model=model, model_provider="openai", temperature=0.2)
     itinerary_research_agent = create_deep_agent(
         model=research_model,
         system_prompt=RESEARCH_INSTRUCTIONS,
-        tools=[internet_search],
+        tools=[internet_search, call_flight_search_agent],
     )
 
     @tool("itinerary_research_agent", description="Plans a detailed, day-by-day travel itinerary.")
@@ -157,7 +248,7 @@ def build_travel_scout(openai_key: str, tavily_key: str, model: str):
     scout_model = ChatOpenAI(model=model, temperature=0.2, openai_api_key=openai_key)
     return create_react_agent(
         model=scout_model,
-        tools=[internet_search, call_itinerary_research_agent],
+        tools=[internet_search, call_itinerary_research_agent, call_flight_search_agent],
         prompt=TRAVEL_SCOUT_INSTRUCTIONS,
     )
 
@@ -165,11 +256,11 @@ def build_travel_scout(openai_key: str, tavily_key: str, model: str):
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-if not openai_api_key or not tavily_api_key:
-    st.error("OPENAI_API_KEY and TAVILY_API_KEY must be configured on the server - contact the app owner.")
+if not openai_api_key or not tavily_api_key or not serpapi_api_key:
+    st.error("OPENAI_API_KEY, TAVILY_API_KEY, and SERPAPI_API_KEY must be configured on the server - contact the app owner.")
 else:
     try:
-        travel_scout = build_travel_scout(openai_api_key, tavily_api_key, model_name)
+        travel_scout = build_travel_scout(openai_api_key, tavily_api_key, serpapi_api_key, model_name)
     except Exception as e:
         st.error(f"Error initializing agent: {e}")
         travel_scout = None
