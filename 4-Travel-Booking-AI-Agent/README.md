@@ -25,6 +25,49 @@ This project:
 
 Deployed on Google Cloud Run, auto-deploying on every push to `main` via GitHub Actions (keyless auth via Workload Identity Federation - no secrets stored in GitHub). The OpenAI and Tavily API keys are configured server-side via Google Secret Manager - no key prompt, just open it and ask.
 
+## 🏗️ Architecture
+
+### Request flow
+
+```mermaid
+graph TD
+    User["User (browser)"] -->|"HTTPS"| App["Streamlit app<br/>src/app.py"]
+    App --> Scout["Travel Scout Agent<br/>(LangGraph ReAct)"]
+    Scout -->|"quick factual questions"| Tavily["Tavily Search API"]
+    Scout -->|"itinerary requests"| Research["Itinerary Research Agent<br/>(deepagents, ReAct loop)"]
+    Research -->|"repeated searches"| Tavily
+    Scout -->|"LLM calls"| OpenAI["OpenAI API<br/>gpt-4o-mini / gpt-4o / gpt-4"]
+    Research -->|"LLM calls"| OpenAI
+    Scout --> Extract["extract_text()<br/>normalizes response content"]
+    Extract --> App
+    App -->|"chat response"| User
+```
+
+The Travel Scout agent decides per-message whether to answer directly from a Tavily search, or delegate to the Itinerary Research Agent (itself a multi-step ReAct loop making its own Tavily calls) when the request needs a full day-by-day plan.
+
+**Travel Scout Agent** (main coordinator, LangGraph ReAct)
+- Answers general travel questions directly via web search
+- Delegates itinerary requests to the research agent
+- Synthesizes results and cites sources
+
+**Itinerary Research Agent** (deep research sub-agent, `deepagents`)
+- Multi-step ReAct research loop over Tavily search results
+- Produces structured, day-by-day itineraries
+
+### Deployment & secrets pipeline
+
+```mermaid
+graph LR
+    Dev["git push to main"] --> GHA["GitHub Actions"]
+    GHA -->|"Workload Identity Federation<br/>(no stored key)"| WIF["GCP OIDC provider"]
+    WIF -->|"short-lived token"| SA["github-actions-deploy<br/>service account"]
+    SA -->|"gcloud run deploy --source"| CR["Cloud Run service<br/>travel-booking-agent"]
+    SM[("Secret Manager<br/>openai-api-key<br/>tavily-api-key")] -->|"--set-secrets<br/>mounted as env vars"| CR
+    CR -->|"OPENAI_API_KEY<br/>TAVILY_API_KEY"| App2["running container<br/>(os.getenv, no prompt)"]
+```
+
+Nothing sensitive ever touches GitHub or the repo: deploy auth is a short-lived OIDC token (Workload Identity Federation, no service account key), and the API keys live only in Secret Manager, referenced by name+version - never written to source, Docker image, or GitHub Actions logs.
+
 ## 📁 Project Structure
 
 ```
@@ -82,7 +125,7 @@ User: "Plan a 5-day trip to Tokyo for a first-time visitor"
 Agent: Routes to the itinerary research agent for a full day-by-day plan
 ```
 
-## 🔑 Environment Variables
+## 🔑 Environment Variables & Secrets
 
 The app reads these from the environment - no in-app prompt:
 ```
@@ -90,7 +133,18 @@ OPENAI_API_KEY=your_api_key_here
 TAVILY_API_KEY=your_tavily_key
 ```
 
-On Cloud Run, both are injected from Google Secret Manager (`openai-api-key`, `tavily-api-key`) via `--set-secrets`, not stored as plain environment variables.
+### How they're injected on Cloud Run
+
+1. **Storage**: The actual key values live only in Google Secret Manager, as secrets `openai-api-key` and `tavily-api-key` in the GCP project - never in this repo, never in the Docker image, never in GitHub.
+2. **Access grant**: Both the Cloud Run runtime service account and the GitHub Actions CI service account are granted `roles/secretmanager.secretAccessor` on each secret (nothing else can read them).
+3. **Deploy-time wiring**: The deploy command includes
+   ```
+   --set-secrets OPENAI_API_KEY=openai-api-key:latest,TAVILY_API_KEY=tavily-api-key:latest
+   ```
+   which tells Cloud Run to mount the latest version of each secret as a regular environment variable inside the container at startup - Cloud Run's control plane fetches the value from Secret Manager on the runtime service account's behalf; the value is never written to the service's YAML config in plaintext.
+4. **App code**: `src/app.py` just calls `os.getenv("OPENAI_API_KEY")` / `os.getenv("TAVILY_API_KEY")` like any normal env var - the app itself has no knowledge that Secret Manager exists.
+
+Rotating a key is just `gcloud secrets versions add <secret-name> --data-file=-` with the new value, then redeploying (or waiting for the next deploy) - no code change needed.
 
 ## 📚 Key Technologies
 
@@ -99,19 +153,6 @@ On Cloud Run, both are injected from Google Secret Manager (`openai-api-key`, `t
 - **OpenAI** - GPT model access
 - **Tavily** - Web search integration
 - **LangChain** - LLM framework
-
-## 🏗️ Agent Architecture
-
-### Travel Scout Agent
-- Main coordinator (LangGraph ReAct agent)
-- Answers general travel questions directly via web search
-- Delegates itinerary requests to the research agent
-- Synthesizes results and cites sources
-
-### Itinerary Research Agent
-- Deep research sub-agent (`deepagents`)
-- Multi-step ReAct research loop over Tavily search results
-- Produces structured, day-by-day itineraries
 
 ## 💡 Tips
 
