@@ -19,26 +19,32 @@ This project:
 ✅ **Multi-Agent Coordination** - LangGraph ReAct agent + deep research sub-agent
 ✅ **Web Interface** - Streamlit chat UI
 
+## 🌐 Live App
+
+**https://travel-booking-agent-561690375744.us-central1.run.app**
+
+Deployed on Google Cloud Run, auto-deploying on every push to `main` via GitHub Actions (keyless auth via Workload Identity Federation - no secrets stored in GitHub). The OpenAI and Tavily API keys are configured server-side via Google Secret Manager - no key prompt, just open it and ask.
+
 ## 📁 Project Structure
 
 ```
 4-Travel-Booking-AI-Agent/
 ├── README.md                           # This file
 ├── requirements.txt                    # Python dependencies (notebook/dev)
+├── Dockerfile                          # Container image for Cloud Run
 ├── notebooks/
 │   └── Multi_Agent_Travel_Planner.ipynb
 └── src/
     ├── app.py                          # Streamlit application
-    ├── requirements.txt                # Streamlit Cloud app dependencies
-    └── runtime.txt                     # Pinned Python version for deployment
+    └── requirements.txt                # Streamlit app dependencies
 ```
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Python 3.11+ (required by the `deepagents` dependency)
-- OpenAI API Key
-- Tavily API Key (for web search) — get a free key at [tavily.com](https://tavily.com)
+- An OpenAI API key
+- A Tavily API key (for web search) — get a free key at [tavily.com](https://tavily.com)
 
 ### Installation
 
@@ -78,11 +84,13 @@ Agent: Routes to the itinerary research agent for a full day-by-day plan
 
 ## 🔑 Environment Variables
 
-Set these before running, or enter them directly in the Streamlit sidebar:
+The app reads these from the environment - no in-app prompt:
 ```
 OPENAI_API_KEY=your_api_key_here
 TAVILY_API_KEY=your_tavily_key
 ```
+
+On Cloud Run, both are injected from Google Secret Manager (`openai-api-key`, `tavily-api-key`) via `--set-secrets`, not stored as plain environment variables.
 
 ## 📚 Key Technologies
 

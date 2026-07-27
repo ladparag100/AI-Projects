@@ -1,0 +1,38 @@
+name: Deploy Travel Booking Agent to Cloud Run
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "4-Travel-Booking-AI-Agent/**"
+      - ".github/workflows/deploy-travel-booking-cloudrun.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: project-8a378124-dc5f-47f4-91a
+          workload_identity_provider: projects/561690375744/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-actions-deploy@project-8a378124-dc5f-47f4-91a.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy travel-booking-agent \
+            --source 4-Travel-Booking-AI-Agent \
+            --region us-central1 \
+            --project project-8a378124-dc5f-47f4-91a \
+            --port 7860 \
+            --allow-unauthenticated \
+            --set-secrets OPENAI_API_KEY=openai-api-key:latest,TAVILY_API_KEY=tavily-api-key:latest \
+            --quiet

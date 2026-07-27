@@ -13,6 +13,23 @@ st.set_page_config(page_title="Travel Booking AI Agent", page_icon="✈️", lay
 st.title("✈️ Travel Booking AI Agent")
 st.write("Ask general travel questions or request a full day-by-day itinerary.")
 
+
+def extract_text(content):
+    """Chat model content can be a plain string or a list of parts
+    (e.g. text plus provider-specific metadata blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "".join(parts)
+    return str(content)
+
+
 RESEARCH_INSTRUCTIONS = """You are a professional travel itinerary planning agent specializing exclusively in trip research and itinerary design.
 
 SCOPE AND BEHAVIOR RULES
@@ -100,19 +117,11 @@ FORMATTING GUIDELINES:
 - Avoid filler, marketing language, or speculative advice
 """
 
+openai_api_key = os.getenv("OPENAI_API_KEY", "")
+tavily_api_key = os.getenv("TAVILY_API_KEY", "")
+
 with st.sidebar:
     st.header("Configuration")
-    openai_api_key = st.text_input(
-        "OpenAI API Key",
-        value=os.getenv("OPENAI_API_KEY", ""),
-        type="password",
-    )
-    tavily_api_key = st.text_input(
-        "Tavily API Key",
-        value=os.getenv("TAVILY_API_KEY", ""),
-        type="password",
-        help="Used for real-time travel research. Get a free key at tavily.com.",
-    )
     model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o", "gpt-4"], index=0)
     st.divider()
     if st.button("Clear chat"):
@@ -143,7 +152,7 @@ def build_travel_scout(openai_key: str, tavily_key: str, model: str):
     @tool("itinerary_research_agent", description="Plans a detailed, day-by-day travel itinerary.")
     def call_itinerary_research_agent(query: str):
         result = itinerary_research_agent.invoke({"messages": [{"role": "user", "content": query}]})
-        return result["messages"][-1].content
+        return extract_text(result["messages"][-1].content)
 
     scout_model = ChatOpenAI(model=model, temperature=0.2, openai_api_key=openai_key)
     return create_react_agent(
@@ -157,7 +166,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 if not openai_api_key or not tavily_api_key:
-    st.warning("Enter your OpenAI and Tavily API keys in the sidebar to activate the agent.")
+    st.error("OPENAI_API_KEY and TAVILY_API_KEY must be configured on the server - contact the app owner.")
 else:
     try:
         travel_scout = build_travel_scout(openai_api_key, tavily_api_key, model_name)
@@ -179,7 +188,7 @@ else:
                 with st.spinner("Researching..."):
                     try:
                         result = travel_scout.invoke({"messages": [{"role": "user", "content": user_input}]})
-                        answer = result["messages"][-1].content
+                        answer = extract_text(result["messages"][-1].content)
                     except Exception as e:
                         answer = f"An error occurred: {e}"
                     st.markdown(answer)
