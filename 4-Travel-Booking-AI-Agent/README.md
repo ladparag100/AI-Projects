@@ -8,17 +8,20 @@ This project:
 - Answers general travel questions (weather, visas, packing, destination comparisons)
 - Plans complete day-by-day travel itineraries
 - Routes each query to the right agent: quick lookup vs. deep research
+- Lets you compare and pick your own flights (top 3 per leg, up to 3 legs) before generating an itinerary built around them
 - Cites sources for its research
-- Ships a Streamlit chat interface
+- Ships a Streamlit app with both a free-form chat and a structured trip planner
 
 ## 🎯 Features
 
 ✅ **Travel Scout Agent** - Routes queries and answers general travel questions
 ✅ **Itinerary Research Agent** - Deep, multi-step research for full itineraries
 ✅ **Flight Search Agent** - Real flight options (price, airline, duration, stops) via Google Flights data
+✅ **Trip Planner (Human-in-the-Loop)** - Search up to 3 flight legs, compare the top 3 options per leg side by side, click to select, then get a day-by-day itinerary table built around your confirmed flights
 ✅ **Real-Time Web Search** - Tavily-powered research with source citations
 ✅ **Multi-Agent Coordination** - LangGraph ReAct agents + deep research sub-agent, composed as tools
-✅ **Web Interface** - Streamlit chat UI
+✅ **Conversation Memory** - Full chat history is passed to the agent every turn, not just the latest message
+✅ **Web Interface** - Streamlit app with a free-form Chat tab and a structured Trip Planner tab
 
 ## 🌐 Live App
 
@@ -64,6 +67,23 @@ The Travel Scout agent decides per-message whether to answer directly from a Tav
 - Resolves city names to IATA airport codes and normalizes dates
 - Calls `search_flights`, a tool wrapping SerpApi's Google Flights engine, for real prices/times/stops
 - Never invents flight details - reports only what the tool returns, or asks a clarifying question if origin, destination, or dates are ambiguous
+
+### Trip Planner flow (human-in-the-loop)
+
+```mermaid
+graph TD
+    Form["Enter up to 3 legs<br/>(from, to, date)"] --> Resolve["resolve_airport_code()<br/>city name -> IATA code"]
+    Resolve --> Fetch["fetch_flight_options()<br/>top 3 per leg via SerpApi"]
+    Fetch --> Cards["Selectable flight cards<br/>per leg, full details shown"]
+    Cards -->|"user clicks Select"| Wait{"All legs<br/>selected?"}
+    Wait -->|"no"| Cards
+    Wait -->|"yes"| Confirm["Confirm Flights &amp; Build Itinerary"]
+    Confirm --> Research["itinerary_research_agent<br/>(flights fixed, plans activities only)"]
+    Research --> Structure["ChatOpenAI.with_structured_output(ItineraryPlan)<br/>free text -> structured day-by-day JSON"]
+    Structure --> Tables["Flight summary table<br/>+ Day-by-day itinerary table"]
+```
+
+Unlike the Chat tab, this flow doesn't let the LLM silently pick a flight - the user chooses explicitly by clicking a card, and that exact choice is passed to the itinerary agent as a fixed fact ("already booked, do not search or suggest alternatives"). The final itinerary is generated as free text first (reusing the same research agent and its Tavily/flight tools), then run through a second, separate structured-output call that converts it into clean `day / date / location / morning / afternoon / evening` rows for the table - this two-step approach is more reliable than asking a ReAct agent for JSON directly.
 
 ### Deployment & secrets pipeline
 
@@ -143,6 +163,17 @@ Agent: Routes to the itinerary research agent for a full day-by-day plan,
 User: "Find flights from JFK to NRT on 2026-09-10, returning 2026-09-20"
 Agent: Routes to the flight search agent, which calls search_flights and
        reports real prices, airlines, durations, and stops
+```
+
+### Trip Planner (Human-in-the-Loop)
+```
+1. Open the "Trip Planner" tab
+2. Enter each leg: SFO -> Oahu (Sept 2), Oahu -> Maui (Sept 4), Maui -> SFO (Sept 7)
+3. Click "Search Flights" - see the top 3 real options per leg as clickable cards
+4. Click "Select" on your preferred flight for each leg
+5. Click "Confirm Flights & Build Itinerary"
+6. Get a flight summary table + a day-by-day itinerary table built around exactly
+   the flights you picked - nothing is auto-selected by the LLM
 ```
 
 ## 🔑 Environment Variables & Secrets

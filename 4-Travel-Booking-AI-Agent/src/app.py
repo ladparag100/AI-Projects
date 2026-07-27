@@ -1,5 +1,6 @@
 import os
 from datetime import date
+from typing import List
 
 import serpapi
 import streamlit as st
@@ -9,6 +10,7 @@ from langchain.tools import tool
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from langgraph.prebuilt import create_react_agent
+from pydantic import BaseModel, Field
 
 st.set_page_config(page_title="Travel Booking AI Agent", page_icon="✈️", layout="wide")
 
@@ -166,12 +168,39 @@ CITY_CODE_TO_AIRPORT = {
 }
 
 
-@tool("search_flights", description="Searches real flight options (price, airline, duration, stops) between two airports using Google Flights data via SerpApi.")
-def search_flights(departure_id: str, arrival_id: str, outbound_date: str, return_date: str = "") -> str:
-    """
-    departure_id / arrival_id: IATA airport codes, e.g. JFK, NRT, LHR.
-    outbound_date / return_date: YYYY-MM-DD. Omit return_date for a one-way search.
-    """
+class AirportCode(BaseModel):
+    iata_code: str = Field(description="A single, specific 3-letter IATA airport code - never a multi-airport metro/city code.")
+
+
+def resolve_airport_code(location: str, openai_key: str, model: str) -> str:
+    """Resolves a free-text city/airport name to a specific IATA airport code via structured LLM output."""
+    location = location.strip()
+    if len(location) == 3 and location.isalpha():
+        code = location.upper()
+        return CITY_CODE_TO_AIRPORT.get(code, code)
+    resolver = ChatOpenAI(model=model, temperature=0.0, openai_api_key=openai_key).with_structured_output(AirportCode)
+    result = resolver.invoke(
+        f"What is the primary international airport's IATA code for '{location}'? "
+        "Return one specific airport code, never a multi-airport city code."
+    )
+    return result.iata_code.upper()
+
+
+class ItineraryDay(BaseModel):
+    day: int = Field(description="Day number, starting at 1.")
+    date: str = Field(description="Date for this day, YYYY-MM-DD.")
+    location: str = Field(description="City/area the traveler is in on this day.")
+    morning: str = Field(description="Morning plan.")
+    afternoon: str = Field(description="Afternoon plan.")
+    evening: str = Field(description="Evening plan.")
+
+
+class ItineraryPlan(BaseModel):
+    days: List[ItineraryDay]
+
+
+def fetch_flight_options(departure_id: str, arrival_id: str, outbound_date: str, return_date: str = "", top_n: int = 3):
+    """Returns up to top_n structured flight options as plain dicts, or raises ValueError on no results/error."""
     departure_id = CITY_CODE_TO_AIRPORT.get(departure_id.upper(), departure_id.upper())
     arrival_id = CITY_CODE_TO_AIRPORT.get(arrival_id.upper(), arrival_id.upper())
 
@@ -190,23 +219,50 @@ def search_flights(departure_id: str, arrival_id: str, outbound_date: str, retur
     results = serpapi.GoogleSearch(params).get_dict()
 
     if "error" in results:
-        return f"Flight search error: {results['error']}"
+        raise ValueError(results["error"])
 
     flights = results.get("best_flights", []) + results.get("other_flights", [])
     if not flights:
-        return "No flights found for these criteria."
+        raise ValueError("No flights found for these criteria.")
 
-    lines = []
-    for flight in flights[:5]:
+    options = []
+    for flight in flights[:top_n]:
         legs = flight.get("flights", [])
         airlines = ", ".join(sorted({leg.get("airline", "Unknown") for leg in legs}))
-        stops = max(len(legs) - 1, 0)
         duration = flight.get("total_duration", 0)
-        price = flight.get("price", "N/A")
+        options.append({
+            "departure_id": departure_id,
+            "arrival_id": arrival_id,
+            "airlines": airlines,
+            "price": flight.get("price", "N/A"),
+            "duration_min": duration,
+            "stops": max(len(legs) - 1, 0),
+            "departure_time": legs[0].get("departure_airport", {}).get("time", "") if legs else "",
+            "arrival_time": legs[-1].get("arrival_airport", {}).get("time", "") if legs else "",
+        })
+    return options
+
+
+def format_flight_options(options) -> str:
+    lines = []
+    for opt in options:
         lines.append(
-            f"- {airlines}: ${price}, {duration // 60}h {duration % 60}m, {stops} stop(s)"
+            f"- {opt['airlines']}: ${opt['price']}, {opt['duration_min'] // 60}h {opt['duration_min'] % 60}m, {opt['stops']} stop(s)"
         )
     return "\n".join(lines)
+
+
+@tool("search_flights", description="Searches real flight options (price, airline, duration, stops) between two airports using Google Flights data via SerpApi.")
+def search_flights(departure_id: str, arrival_id: str, outbound_date: str, return_date: str = "") -> str:
+    """
+    departure_id / arrival_id: IATA airport codes, e.g. JFK, NRT, LHR.
+    outbound_date / return_date: YYYY-MM-DD. Omit return_date for a one-way search.
+    """
+    try:
+        options = fetch_flight_options(departure_id, arrival_id, outbound_date, return_date, top_n=5)
+    except ValueError as e:
+        return str(e)
+    return format_flight_options(options)
 
 
 @st.cache_resource(show_spinner=False)
@@ -248,41 +304,194 @@ def build_travel_scout(openai_key: str, tavily_key: str, serpapi_key: str, model
         return extract_text(result["messages"][-1].content)
 
     scout_model = ChatOpenAI(model=model, temperature=0.2, openai_api_key=openai_key)
-    return create_react_agent(
+    travel_scout = create_react_agent(
         model=scout_model,
         tools=[internet_search, call_itinerary_research_agent, call_flight_search_agent],
         prompt=TRAVEL_SCOUT_INSTRUCTIONS,
     )
+    return travel_scout, itinerary_research_agent
 
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "planner_leg_results" not in st.session_state:
+    st.session_state.planner_leg_results = None
+if "planner_selected" not in st.session_state:
+    st.session_state.planner_selected = {}
+if "planner_itinerary" not in st.session_state:
+    st.session_state.planner_itinerary = None
 
 if not openai_api_key or not tavily_api_key or not serpapi_api_key:
     st.error("OPENAI_API_KEY, TAVILY_API_KEY, and SERPAPI_API_KEY must be configured on the server - contact the app owner.")
 else:
     try:
-        travel_scout = build_travel_scout(openai_api_key, tavily_api_key, serpapi_api_key, model_name)
+        travel_scout, itinerary_research_agent = build_travel_scout(openai_api_key, tavily_api_key, serpapi_api_key, model_name)
     except Exception as e:
         st.error(f"Error initializing agent: {e}")
-        travel_scout = None
+        travel_scout, itinerary_research_agent = None, None
 
-    if travel_scout is not None:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+    tab_chat, tab_planner = st.tabs(["💬 Chat", "🧳 Trip Planner"])
 
-        if user_input := st.chat_input("Ask about destinations or request an itinerary..."):
-            st.session_state.messages.append({"role": "user", "content": user_input})
-            with st.chat_message("user"):
-                st.markdown(user_input)
+    with tab_chat:
+        if travel_scout is not None:
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
 
-            with st.chat_message("assistant"):
-                with st.spinner("Researching..."):
+            if user_input := st.chat_input("Ask about destinations or request an itinerary..."):
+                st.session_state.messages.append({"role": "user", "content": user_input})
+                with st.chat_message("user"):
+                    st.markdown(user_input)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Researching..."):
+                        try:
+                            result = travel_scout.invoke({"messages": st.session_state.messages})
+                            answer = extract_text(result["messages"][-1].content)
+                        except Exception as e:
+                            answer = f"An error occurred: {e}"
+                        st.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+
+    with tab_planner:
+        st.write(
+            "Enter each flight leg, compare real options side by side, pick the one you want, "
+            "then generate a day-by-day itinerary built around your confirmed flights."
+        )
+
+        num_legs = st.selectbox("Number of flight legs", [1, 2, 3], index=2)
+
+        with st.form("planner_search_form"):
+            leg_inputs = []
+            for i in range(num_legs):
+                st.markdown(f"**Leg {i + 1}**")
+                cols = st.columns(3)
+                dep = cols[0].text_input("From (city or airport code)", key=f"planner_dep_{i}")
+                arr = cols[1].text_input("To (city or airport code)", key=f"planner_arr_{i}")
+                dt = cols[2].date_input("Date", key=f"planner_date_{i}")
+                leg_inputs.append((dep, arr, dt))
+            search_submitted = st.form_submit_button("Search Flights")
+
+        if search_submitted:
+            st.session_state.planner_selected = {}
+            st.session_state.planner_itinerary = None
+            leg_results = []
+            with st.spinner("Searching flights..."):
+                for dep, arr, dt in leg_inputs:
+                    if not dep or not arr:
+                        st.error("Please fill in every departure and arrival field.")
+                        leg_results = None
+                        break
+                    dep_code, arr_code, options = dep, arr, []
                     try:
-                        result = travel_scout.invoke({"messages": st.session_state.messages})
-                        answer = extract_text(result["messages"][-1].content)
+                        dep_code = resolve_airport_code(dep, openai_api_key, model_name)
+                        arr_code = resolve_airport_code(arr, openai_api_key, model_name)
+                        options = fetch_flight_options(dep_code, arr_code, dt.isoformat(), top_n=3)
+                    except ValueError as e:
+                        st.warning(f"{dep} -> {arr} on {dt}: {e}")
                     except Exception as e:
-                        answer = f"An error occurred: {e}"
-                    st.markdown(answer)
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+                        st.warning(f"Could not resolve or search {dep} -> {arr}: {e}")
+                    leg_results.append({
+                        "departure_code": dep_code,
+                        "arrival_code": arr_code,
+                        "date": dt.isoformat(),
+                        "options": options,
+                    })
+            if leg_results is not None:
+                st.session_state.planner_leg_results = leg_results
+
+        if st.session_state.planner_leg_results:
+            st.write("### Choose Your Flights")
+            all_selected = True
+            for i, leg in enumerate(st.session_state.planner_leg_results):
+                st.markdown(f"#### Leg {i + 1}: {leg['departure_code']} → {leg['arrival_code']} on {leg['date']}")
+                if not leg["options"]:
+                    st.error("No flights found for this leg.")
+                    all_selected = False
+                    continue
+                cols = st.columns(len(leg["options"]))
+                for idx, opt in enumerate(leg["options"]):
+                    with cols[idx]:
+                        with st.container(border=True):
+                            st.markdown(f"**{opt['airlines']}**")
+                            st.markdown(f"💰 **${opt['price']}**")
+                            st.markdown(f"⏱️ {opt['duration_min'] // 60}h {opt['duration_min'] % 60}m")
+                            st.markdown("🛑 Non-stop" if opt["stops"] == 0 else f"🛑 {opt['stops']} stop(s)")
+                            if opt.get("departure_time"):
+                                st.markdown(f"🛫 {opt['departure_time']}")
+                            if opt.get("arrival_time"):
+                                st.markdown(f"🛬 {opt['arrival_time']}")
+                            is_selected = st.session_state.planner_selected.get(i) == opt
+                            if st.button(
+                                "✅ Selected" if is_selected else "Select",
+                                key=f"planner_select_{i}_{idx}",
+                                type="primary" if is_selected else "secondary",
+                                use_container_width=True,
+                            ):
+                                st.session_state.planner_selected[i] = opt
+                                st.rerun()
+                if i not in st.session_state.planner_selected:
+                    all_selected = False
+
+            st.divider()
+            if all_selected:
+                if st.button("✈️ Confirm Flights & Build Itinerary", type="primary"):
+                    flight_summary_lines = []
+                    for i, leg in enumerate(st.session_state.planner_leg_results):
+                        opt = st.session_state.planner_selected[i]
+                        flight_summary_lines.append(
+                            f"Leg {i + 1}: {leg['departure_code']} to {leg['arrival_code']} on {leg['date']} - "
+                            f"{opt['airlines']}, ${opt['price']}, {opt['duration_min'] // 60}h {opt['duration_min'] % 60}m, {opt['stops']} stop(s)"
+                        )
+                    flight_summary_text = "\n".join(flight_summary_lines)
+
+                    with st.spinner("Building your itinerary..."):
+                        try:
+                            query = (
+                                "Build a detailed day-by-day itinerary for a trip with these flights ALREADY "
+                                "BOOKED and CONFIRMED - do not search for or suggest different flights, just plan "
+                                f"activities around them:\n\n{flight_summary_text}\n\nPlan activities, dining, and "
+                                "practical tips for each destination for the full span of the trip, from the first "
+                                "departure date to the last arrival date."
+                            )
+                            result = itinerary_research_agent.invoke({"messages": [{"role": "user", "content": query}]})
+                            itinerary_text = extract_text(result["messages"][-1].content)
+
+                            structurer = ChatOpenAI(
+                                model=model_name, temperature=0.0, openai_api_key=openai_api_key
+                            ).with_structured_output(ItineraryPlan)
+                            structured = structurer.invoke(
+                                "Convert this travel itinerary into structured day-by-day data. "
+                                f"Preserve all dates and locations exactly:\n\n{itinerary_text}"
+                            )
+                            st.session_state.planner_itinerary = structured.days
+                        except Exception as e:
+                            st.error(f"Error building itinerary: {e}")
+            else:
+                st.info("Select a flight for every leg to continue.")
+
+        if st.session_state.planner_itinerary:
+            st.write("### ✈️ Your Selected Flights")
+            flight_rows = []
+            for i, leg in enumerate(st.session_state.planner_leg_results):
+                opt = st.session_state.planner_selected[i]
+                flight_rows.append({
+                    "Leg": i + 1,
+                    "Route": f"{leg['departure_code']} → {leg['arrival_code']}",
+                    "Date": leg["date"],
+                    "Airline": opt["airlines"],
+                    "Price": f"${opt['price']}",
+                    "Duration": f"{opt['duration_min'] // 60}h {opt['duration_min'] % 60}m",
+                    "Stops": opt["stops"],
+                })
+            st.dataframe(flight_rows, use_container_width=True, hide_index=True)
+
+            st.write("### 🗓️ Your Itinerary")
+            day_rows = [d.model_dump() for d in st.session_state.planner_itinerary]
+            st.dataframe(day_rows, use_container_width=True, hide_index=True)
+
+            if st.button("Start Over"):
+                st.session_state.planner_leg_results = None
+                st.session_state.planner_selected = {}
+                st.session_state.planner_itinerary = None
+                st.rerun()
